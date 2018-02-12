@@ -4,12 +4,12 @@
 rm(list = ls())
 # install.packages("_______")
 library(ggplot2)
-library(corrplot)
-library(randomForest)
-library(rpart)
 library(ggthemes)
 library(lattice)
+library(gmodels)
 library(tidyverse)
+
+
 
 #### READ IN DATA AND CHECK STRUCTURE ####
 # reading in data - set working directory to location of csv
@@ -23,14 +23,13 @@ chall <- data.frame(read_csv("SAPio_DataScience_Challenge.csv",
 # checking the structure of datatable and summary stats 
 str(chall)
 summary(chall)
-# are there any duplicates? 109 duplicates - potential problem? will revisit
-dups <- which(duplicated(chall))
+# are there any duplicates? 109 duplicates - potential problem? will revisit if time permits
+duplicates <- which(duplicated(chall))
 chall.u <- unique(chall)
 # for now, use unique datatable as dataframe for analysis
 df <- chall.u
 
-# curious how many of each type of wine - mostly white 
-table(df$type)
+
 
 #### DEFINE A 'GOOD' WINE ####
 # checking out distribution of quality variable 
@@ -43,12 +42,14 @@ df$good.wine <- ifelse(df$quality>6,1,0)
 # curious how many of total are now considered 'good' 
 ggplot(df, aes(x=good.wine,fill=factor(good.wine))) + 
   geom_bar(stat = "count") + theme_fivethirtyeight()
-tbl <- table(df$good.wine)
-prop <- round(prop.table(tbl)*100,2)
-good.tbl <- cbind(tbl,prop) # combine counts and proportions
-good.tbl # ~20% are good
 
-#### CHECKING CORRELATIONS ####
+CrossTable(df$good.wine) # ~20% are good
+CrossTable(df$good.wine, df$type, prop.c=F,prop.chisq=F)
+
+
+
+#### CHECKING CORRELATIONS AND DISTRIBUTIONS ####
+library(corrplot)
 corrplot(cor(df[,2:16], use = "pairwise.complete.obs"))
 # there are missing or NA obs for several variables - will likely need imputation
 # POSITIVE CORR: alcohol is the only predictor that positively correlates with quality
@@ -65,6 +66,10 @@ ggplot(df,aes(x=alcohol,fill=factor(good.wine)))+geom_density(alpha=0.25)+
   geom_vline(aes(xintercept=median(alcohol[good.wine==1],na.rm=T)),color="blue",linetype="dashed",lwd=1)+
   theme_fivethirtyeight()
 
+# with more time, would have looked at more predictor distributions 
+
+
+
 #### EXPLORING MISSING DATA AND IMPUTATION ####
 # exploring missing data across all variables  
 library(Amelia)
@@ -72,60 +77,101 @@ library(missForest)
 missmap(df, main = "Missing Values vs observed")
 # residual sugar, astringency.rating, volatile.acidity, vintage, and pH missing obs
 
+# looking at more advanced ways to impute, but going with mean and mode to save time
 # df.mis <- prodNA(df, noNA=0.1)
 # summary(df.mis)
 # impute using all parameters as default values 
 # df.imp <- missForest(df.mis)
 
-# make imputations based on average values
+# make imputations based on average values and mode (vintage)
 df.imp <- df
 df.imp$astringency.rating[is.na(df.imp$astringency.rating)] <- mean(df$astringency.rating, na.rm = T)
 df.imp$volatile.acidity[is.na(df.imp$volatile.acidity)] <- mean(df$volatile.acidity, na.rm = T)
-df.imp$vintage[is.na(df.imp$vintage)] <- mean(df$vintage, na.rm = T)
+df.imp$vintage[is.na(df.imp$vintage)] <- mode(df$vintage)
 df.imp$pH[is.na(df.imp$pH)] <- mean(df$pH, na.rm = T)
+
+# residual sugar has too many missing values, so will drop for now
+df.imp$residual.sugar = NULL
 
 # checking to make sure imputation worked
 missmap(df.imp, main = "Missing Values after imputation")
 
-#### PARTITIONING THE DATA ####
+# want to classify missing variables (given more time)
+df.imp$quality = NULL
+
+
+#### PARTITIONING ####
 set.seed(919)
 partition <- sample(1:2, size = nrow(df.imp), prob = c(.7,.30), replace = T)
 
 # Create a training and validation set from the original data frame 
-df_train <- df.imp[partition == 1, ]    # subset the grade data frame to training indices only
-df_valid <- df.imp[partition == 2, ]  # subset the grade data frame to validation indices only
-df_valid_og <- df_valid[,1:15]
+train <- df.imp[partition == 1, ]    # subset the grade data frame to training indices only
+test <- df.imp[partition == 2, ]  # subset the grade data frame to validation indices only
 
-#### TREE BASED CLASSIFICATION MODELING ####
-chall.RF <- randomForest(factor(good.wine)~.-quality-residual.sugar, df.imp, ntree=150)
+test <- test %>%
+  filter(vintage>2001) # removing one obs with vintage year 2001
 
 
-tree.fit <- rpart(good.wine ~ .-quality, df_train, method = "class")
-summary(tree.fit)
-plotcp(tree.fit)
-plot(tree.fit)
 
 #### FITTING LOGISTIC REGRESSION #####
 
-good.model <- glm(good.wine~.-quality-residual.sugar, family = binomial(link='logit'), 
-              data = df_train)
+good.model <- glm(good.wine~., family = binomial(link='logit'), # want to see odds ratios
+              data = train)
 summary(good.model)
+# we see the following variables are significant:
+# volatile.acidity
+# chlorides
+# free.sulfur.dioxide
+# total.sulfur.dioxide
+# density
+# sulphates
+# alcohol
+# vintage(2005 and 2008) 
 
-df_train$good_prob <- predict(df_train$good_pred,type = "response")
+
 
 #### ASSESSING LOGISTIC REGRESSION ####
-fit.df <- predict(logres, newdata = df_valid_og, type = "response")
-fit.df <- ifelse(fit.df > 0.5,1,0)
+fit.model <- predict(good.model, newdata = test, type = "response")
+range(fit.model)
+
+# selecting arbitrary cut-off of 30%
+fit.df <- ifelse(fit.model > 0.3,1,0)
 fit.df
 
-misClasificError <- mean(fit.df != df_valid$good.wine)
-print(paste('Accuracy',1-misClasificError))
+# looking at missclassification and confusion matrix 
+misclass_error <- mean(fit.df != test$good.wine)
+print(paste('Accuracy',1-misclass_error)) # ~ 0.80
+table(test$good.wine, fit.df)
 
+# looking at ROC curve and Area Under Curve
 library(ROCR)
-pr <- prediction(fit.df, df_valid$good.wine)
+pr <- prediction(fit.df, test$good.wine)
 prf <- performance(pr, measure = "tpr", x.measure = "fpr")
 plot(prf)
 
 auc <- performance(pr, measure = "auc")
 auc <- auc@y.values[[1]]
-auc
+auc # AUC ~ 0.71
+
+# The logistic regression provides decent predictive power
+# would consider checking interactions and multi-collinearity given more time
+# there are likely a number of interactions between sulfur variables, density, and alcohol level
+
+
+#### TREE BASED CLASSIFICATION MODELING ####
+# library(randomForest)
+# chall.RF <- randomForest(factor(good.wine)~., df.imp, ntree=150)
+
+library(rpart)
+tree.fit <- rpart(good.wine ~ ., train, method = "class")
+summary(tree.fit)
+plotcp(tree.fit)
+plot(tree.fit)
+
+#### FUTURE NEXT STEPS ####
+# would like to incorporate decision tree with logistric regression in order to get 
+# a scorecard of good and bad predictors
+# same idea as in credit scoring
+# but in this case with wine attributes and physicochemical characteristics
+
+
