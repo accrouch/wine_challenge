@@ -1,0 +1,5 @@
+
+This dataset is a slightly altered version of a dataset presented in:
+P. Cortez, A. Cerdeira, F. Almeida, T. Matos and J. Reis. Modeling wine preferences by data mining from physicochemical properties. In Decision Support Systems, Elsevier, 47(4):547-553, 2009.
+
+It was used for the technical portion of an application code challenge. 
